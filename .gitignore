@@ -7,3 +7,4 @@ org.py
 simplechat.py
 *.log
 *.pid
+venv
