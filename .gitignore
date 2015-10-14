@@ -3,3 +3,7 @@
 *.pyc
 .DS_Store
 p2p/
+org.py
+simplechat.py
+*.log
+*.pid
