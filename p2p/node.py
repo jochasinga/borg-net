@@ -249,7 +249,7 @@ class Node:
             raise
         except:
             if self.debug:
-                tracback.print_exc()
+                traceback.print_exc()
 
         return msgreply
 
