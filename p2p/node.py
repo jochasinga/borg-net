@@ -10,7 +10,7 @@ def debug(msg):
     """ Prints a messsage to the screen with the name of the current thread """
     print "[%s] %s" % ( str(threading.currentThread().getName()), msg )
 
-class Peer:
+class Node:
     """ Implements the core functionality that might be used by a peer in a
     P2P network.
 
@@ -74,7 +74,7 @@ class Peer:
 
         host, port = clientsock.getpeername()
         # Establish a connection
-        peerconn = PeerConnection(None, host, port, clientsock, debug=False)
+        peerconn = NodeConnection(None, host, port, clientsock, debug=False)
 
         try:
             # receive data -> (msgtype, msgdata)
@@ -318,7 +318,7 @@ class Peer:
 
 # end Peer class
 
-class PeerConnection:
+class NodeConnection:
     def __init__(self, peerid, host, port, sock=None, debug=False):
         self.id = peerid
         self.debug = debug
@@ -332,8 +332,11 @@ class PeerConnection:
         self.sd = self.s.makefile('rw', 0)
 
     def __makemsg(self, msgtype, msgdata):
+        """
+        Convert msgtype and msgdata to C-style struct
+        -> (msgtype, msglen, msgdata)
+        """
         msglen = len(msgdata)
-        # what is this?
         msg = struct.pack("!4sL%ds" % msglen, msgtype, msglen, msgdata)
         return msg
 
@@ -344,7 +347,6 @@ class PeerConnection:
     def senddata(self, msgtype, msgdata):
         """
     	senddata( message type, message data ) -> boolean status
-
     	Send a message through a peer connection. Returns True on success
     	or False if there was an error.
     	"""
