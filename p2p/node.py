@@ -261,7 +261,7 @@ class Node:
     	not reply. This function can be used as a simple stabilizer.
 
     	"""
-        todelte = []
+        todelete = []
         for pid in self.peers:
             isconnected = False
             try:
