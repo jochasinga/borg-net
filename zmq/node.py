@@ -7,7 +7,7 @@ import traceback
 import md5
 import base64
 
-class Socket:
+class Socket(object):
 
     # socket_type
     CLIENT = zmq.REQ
@@ -16,15 +16,15 @@ class Socket:
     DEALER = zmq.DEALER
 
     # Central context/process
-    context = zmq.Context()
+    CONTEXT = zmq.Context()
 
     def __init__(self, host, port, socket_type):
         self.host = host
-        self.port = port
-        self.sock = self.context.socket(socket_type)
+        self.port = int(port)
+        self.sock = self.CONTEXT.socket(socket_type)
 
     def connect(self):
-        self.sock.connect("tcp://{host}:{port}".format(self.host, self.port))
+        self.sock.connect("tcp://{0}:{1}".format(self.host, self.port))
 
     def send(self, msg):
         self.sock.send(msg)
@@ -36,36 +36,35 @@ class Socket:
         self.sock.close()
 
 class Client(Socket):
-    """Inherit the Socket class"""
-    def __init__(self, target_port, target_host='0.0.0.0', socket_type=Socket.CLIENT):
+    def __init__(self, target_host, target_port):
         self.host = target_host
         self.port = int(target_port)
-        self.sock = self.context.socket(socket_type)
+        self.sock = self.CONTEXT.socket(Socket.CLIENT)
 
 class Server(Socket):
-    """Inherit the Socket class"""
-    def __init__(self, server_port, server_host='*', socket_type=Socket.SERVER):
+    def __init__(self, server_host, server_port):
         self.host = server_host
         self.port = int(server_port)
-        self.sock = self.context.socket(socket_type)
+        self.sock = self.CONTEXT.socket(Socket.SERVER)
 
     def bind(self):
-        self.connect()
+        self.sock.bind("tcp://{0}:{1}".format(self.host, self.port))
 
 class Proxy(Socket):
     """
-    Proxy is actually what other clients connect to, and it is always
-    connected to the Node's server at the backend
+    Proxy is actually what other clients connect to, and its DEALER is always
+    connected to the Node's Server
     """
     def __init__(self, front_host, front_port, back_host, back_port):
         self.front_host = front_host
         self.front_port = int(front_port)
+        # Not yet designate the server's endpoint
         self.back_host = back_host
         self.back_port = int(back_port)
 
         # Generate two sockets for front and back endpoints
-        self.frontend = self.context.socket(Socket.ROUTER)
-        self.backend = self.context.socket(Socket.DEALER)
+        self.frontend = self.CONTEXT.socket(Socket.ROUTER)
+        self.backend = self.CONTEXT.socket(Socket.DEALER)
 
     def connect(self):
         pass
@@ -77,11 +76,8 @@ class Proxy(Socket):
         pass
 
     def bind_and_connect(self):
-        self.frontend.bind("tcp://{0}:{1}".format(
-            self.front_host, self.front_port))
-        
-        self.backend.connect("tcp://{0}:{1}".format(
-            self.back_host, self.back_port))
+        self.frontend.bind("tcp://{0}:{1}".format(self.front_host, self.front_port))
+        self.backend.connect("tcp://{0}:{1}".format(self.back_host, self.back_port))
 
     def register_poll(self):
         self.poller = zmq.Poller()
@@ -97,7 +93,7 @@ class Proxy(Socket):
                 message = self.frontend.recv_multipart()
                 self.backend.send_multipart(message)
                 print "Sent message from DEALER"
-                
+
             if socks.get(self.backend) == zmq.POLLIN:
                 print "New message on DEALER"
                 message = self.backend.recv_multipart()
@@ -108,8 +104,7 @@ class Proxy(Socket):
         self.frontend.close()
         self.frontend.close()
 
-class Peer:
-
+class Peer(object):
     @staticmethod
     def make_id():
         """Make a md5-generated id for any unnamed peer"""
@@ -117,13 +112,14 @@ class Peer:
         m.update(str(time.time()))
         return base64.encodestring(m.digest())[:-3].replace('/', '$')
 
-    def __init__(self, server_host, server_port, frontend_host, frontend_port, backend_host, backend_port, my_id=None, max_peers=0):
+    def __init__(self, server_host, server_port, frontend_host,
+        frontend_port, my_id=None, max_peers=0):
 
         if my_id:
             self.my_id = my_id
         else:
             self.my_id = Peer.make_id()
-            
+
         self.max_peers = int(max_peers)
 
         # Register myself as the first peer
@@ -133,10 +129,12 @@ class Peer:
                 "server_port": server_port,
                 "frontend_host": frontend_host,
                 "frontend_port": frontend_port,
-                "backend_host": backend_host,
-                "backend_port": backend_port,
-                "client_host": None,
-                "client_port": None
+                # DEALER connects to its own SERVER
+                "backend_host": server_host,
+                "backend_port": server_port,
+                # client connect to its own PROXY
+                "client_host": frontend_host,
+                "client_port": frontend_port
             }
         }
 
@@ -155,20 +153,23 @@ class Peer:
 
         # A static endpoint for REP
         self.server = Server(
-            host=self.peers[self.my_id]["server_host"],
-            port=self.peers[self.my_id]["server_port"]
+            server_host=self.peers[self.my_id]["server_host"],
+            server_port=self.peers[self.my_id]["server_port"]
         )
-        
+
         self.server.bind()
 
-        # No client specified until a desire to connect
-        self.client = None
+        # Self's client connect to the PROXY's frontend
+        self.client = Client(
+            target_host=self.peers[self.my_id]['frontend_host'],
+            target_port=self.peers[self.my_id]['frontend_port']
+        )
 
         # Now ready for a poll loop
 
     def add_peer(self, peer_id, peer_host, peer_port):
         """
-        You have to add peers first before connecting. 
+        You have to add peers first before connecting.
         Right now there's no way of discovering peers yet.
         """
         peer_id = peer_id
@@ -177,16 +178,28 @@ class Peer:
             "frontend_host": peer_host,
             "frontend_port": int(peer_port)
         }
-    
+
     def connect_to(self, peer_id):
         """Connect to the proxy of the peer"""
         for id in self.peers:
             if id == peer_id:
+                self.proxy.backend.connect("tcp://{0}:{1}".format(
+                        self.peers[peer_id]['frontend_host'],
+                        self.peers[peer_id]['frontend_port'])
+                )
+
+                """
+                self.client.sock.connect("tcp://{0}:{1}".format(
+                        self.peers[peer_id]['frontend_host'],
+                        self.peers[peer_id]['frontend_port'])
+                )
+
                 self.client = Client(
-                    self.peers[peer_id]['frontend_host'],
-                    self.peers[peer_id]['frontend_port']
+                    target_host=self.peers[peer_id]['frontend_host'],
+                    target_port=self.peers[peer_id]['frontend_port']
                 )
                 self.client.connect()
+                """
             else:
                 print "Couldn't find peer. Did you add him/her?"
 
@@ -220,64 +233,11 @@ class Peer:
 class Node(Peer):
 
     # default
-    SERVER_HOST = '*'
+    SERVER_HOST = '0.0.0.0'
     SERVER_PORT = 12345
-    BACKEND_HOST = '0.0.0.0'
-    BACKEND_PORT = 12346
-    
-    def __init__(self, frontend_host, frontend_port, server_host=SERVER_HOST, server_port=SERVER_PORT, backend_host=BACKEND_HOST, backend_port=BACKEND_PORT, my_id='john', max_peers=0):
+    BACKEND_HOST = SERVER_HOST
+    BACKEND_PORT = SERVER_PORT
 
-        super(Node, self).__init__()
-
-        """
-        self.my_id = my_id
-            
-        self.max_peers = int(max_peers)
-
-        # Register myself as the first peer
-        self.peers = {
-            self.my_id: {
-                "server_host": server_host,
-                "server_port": server_port,
-                "frontend_host": frontend_host,
-                "frontend_port": frontend_port,
-                "backend_host": backend_host,
-                "backend_port": backend_port,
-                "client_host": None,
-                "client_port": None
-            }
-        }
-
-        self.shutdown = False
-
-        # A static endpoint for ROUTER/DEALER
-        self.proxy = Proxy(
-            front_host=self.peers[self.my_id]['frontend_host'],
-            front_port=self.peers[self.my_id]['frontend_port'],
-            back_host=self.peers[self.my_id]['backend_host'],
-            back_port=self.peers[self.my_id]['backend_port']
-        )
-
-        self.proxy.bind_and_connect()
-        self.proxy.register_poll()
-
-        # A static endpoint for REP
-        self.server = Server(
-            host=self.peers[self.my_id]["server_host"],
-            port=self.peers[self.my_id]["server_port"]
-        )
-        
-        self.server.bind()
-
-        # No client specified until a desire to connect
-        self.client = None
-
-        """
-    
-
-
-
-        
-
-               
-                                          
+    def __init__(self, frontend_host, frontend_port):
+        super(Node, self).__init__(server_host=self.SERVER_HOST, server_port=self.SERVER_PORT,
+            frontend_host=frontend_host, frontend_port=frontend_port, my_id='john', max_peers=0)
